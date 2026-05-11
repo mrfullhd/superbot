@@ -1,219 +1,177 @@
-import sqlite3
-import json
+import os
 from datetime import datetime
-from pathlib import Path
+import pymongo
+from pymongo import MongoClient
+import config
 
 class Database:
-    def __init__(self, db_path="data/database.db"):
-        Path(db_path).parent.mkdir(parents=True, exist_ok=True)
-        self.conn = sqlite3.connect(db_path, check_same_thread=False)
-        self.conn.row_factory = sqlite3.Row
-        self.init_tables()
-    
-    def init_tables(self):
-        self.conn.executescript("""
-            CREATE TABLE IF NOT EXISTS users (
-                user_id INTEGER PRIMARY KEY,
-                username TEXT,
-                first_name TEXT,
-                joined_date TEXT,
-                is_banned INTEGER DEFAULT 0,
-                is_admin INTEGER DEFAULT 0,
-                settings TEXT DEFAULT '{}'
-            );
-            
-            CREATE TABLE IF NOT EXISTS tokens (
-                user_id INTEGER PRIMARY KEY,
-                token_data TEXT NOT NULL,
-                drive_email TEXT,
-                added_date TEXT,
-                FOREIGN KEY(user_id) REFERENCES users(user_id)
-            );
-            
-            CREATE TABLE IF NOT EXISTS history (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                user_id INTEGER,
-                type TEXT,
-                source TEXT,
-                output TEXT,
-                file_size INTEGER,
-                status TEXT,
-                date TEXT,
-                FOREIGN KEY(user_id) REFERENCES users(user_id)
-            );
-            
-            CREATE TABLE IF NOT EXISTS downloads (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                user_id INTEGER,
-                url TEXT,
-                file_name TEXT,
-                status TEXT DEFAULT 'pending',
-                progress REAL DEFAULT 0,
-                start_date TEXT,
-                FOREIGN KEY(user_id) REFERENCES users(user_id)
-            );
-            
-            CREATE TABLE IF NOT EXISTS cookies (
-                user_id INTEGER PRIMARY KEY,
-                cookies_data TEXT,
-                added_date TEXT,
-                FOREIGN KEY(user_id) REFERENCES users(user_id)
-            );
-            
-            CREATE TABLE IF NOT EXISTS stats (
-                user_id INTEGER PRIMARY KEY,
-                total_downloads INTEGER DEFAULT 0,
-                total_size INTEGER DEFAULT 0,
-                youtube_downloads INTEGER DEFAULT 0,
-                direct_downloads INTEGER DEFAULT 0,
-                uploads INTEGER DEFAULT 0,
-                FOREIGN KEY(user_id) REFERENCES users(user_id)
-            );
-        """)
-        self.conn.commit()
-    
+    def __init__(self, mongo_uri=None):
+        self.mongo_uri = mongo_uri or os.getenv("MONGO_URI", "mongodb://admin:j4gsQEzwx3HVnv1GBYxc@botty-ols-service:27017/admin")
+        self.client = MongoClient(self.mongo_uri)
+        self.db = self.client["azudl_bot"]
+        self.users = self.db["users"]
+        self.tokens = self.db["tokens"]
+        self.history = self.db["history"]
+        self.cookies = self.db["cookies"]
+        self.stats = self.db["stats"]
+        self.downloads = self.db["downloads"]
+
+    # ---------- Users ----------
     def add_user(self, user_id, username=None, first_name=None):
-        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        self.conn.execute(
-            "INSERT OR IGNORE INTO users (user_id, username, first_name, joined_date) VALUES (?, ?, ?, ?)",
-            (user_id, username, first_name, now)
+        self.users.update_one(
+            {"user_id": user_id},
+            {"$set": {
+                "username": username,
+                "first_name": first_name,
+                "joined_date": datetime.utcnow(),
+                "is_banned": False,
+                "is_admin": False,
+                "settings": {}
+            }},
+            upsert=True
         )
-        self.conn.execute(
-            "INSERT OR IGNORE INTO stats (user_id) VALUES (?)",
-            (user_id,)
-        )
-        self.conn.commit()
-    
+
     def is_banned(self, user_id):
-        row = self.conn.execute("SELECT is_banned FROM users WHERE user_id=?", (user_id,)).fetchone()
-        return row and row["is_banned"] == 1
-    
+        user = self.users.find_one({"user_id": user_id})
+        return user.get("is_banned", False) if user else False
+
     def ban_user(self, user_id):
-        self.conn.execute("UPDATE users SET is_banned=1 WHERE user_id=?", (user_id,))
-        self.conn.commit()
-    
+        self.users.update_one({"user_id": user_id}, {"$set": {"is_banned": True}})
+
     def unban_user(self, user_id):
-        self.conn.execute("UPDATE users SET is_banned=0 WHERE user_id=?", (user_id,))
-        self.conn.commit()
-    
+        self.users.update_one({"user_id": user_id}, {"$set": {"is_banned": False}})
+
     def get_all_users(self):
-        return self.conn.execute("SELECT * FROM users").fetchall()
-    
+        return list(self.users.find({}))
+
     def user_count(self):
-        return self.conn.execute("SELECT COUNT(*) as count FROM users").fetchone()["count"]
-    
+        return self.users.count_documents({})
+
+    # ---------- Tokens (Google Drive) ----------
     def save_token(self, user_id, token_data, drive_email):
-        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        self.conn.execute(
-            "INSERT OR REPLACE INTO tokens (user_id, token_data, drive_email, added_date) VALUES (?, ?, ?, ?)",
-            (user_id, json.dumps(token_data), drive_email, now)
+        self.tokens.update_one(
+            {"user_id": user_id},
+            {"$set": {
+                "token_data": token_data,
+                "drive_email": drive_email,
+                "added_date": datetime.utcnow()
+            }},
+            upsert=True
         )
-        self.conn.commit()
-    
+
     def get_token(self, user_id):
-        row = self.conn.execute("SELECT * FROM tokens WHERE user_id=?", (user_id,)).fetchone()
-        return json.loads(row["token_data"]) if row else None
-    
+        doc = self.tokens.find_one({"user_id": user_id})
+        return doc.get("token_data") if doc else None
+
     def delete_token(self, user_id):
-        self.conn.execute("DELETE FROM tokens WHERE user_id=?", (user_id,))
-        self.conn.commit()
-    
+        self.tokens.delete_one({"user_id": user_id})
+
     def is_authenticated(self, user_id):
-        row = self.conn.execute("SELECT 1 FROM tokens WHERE user_id=?", (user_id,)).fetchone()
-        return row is not None
-    
+        return self.tokens.find_one({"user_id": user_id}) is not None
+
+    # ---------- Cookies ----------
     def save_cookies(self, user_id, cookies_data):
-        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        self.conn.execute(
-            "INSERT OR REPLACE INTO cookies (user_id, cookies_data, added_date) VALUES (?, ?, ?)",
-            (user_id, cookies_data, now)
+        self.cookies.update_one(
+            {"user_id": user_id},
+            {"$set": {"cookies_data": cookies_data, "added_date": datetime.utcnow()}},
+            upsert=True
         )
-        self.conn.commit()
-    
+
     def get_cookies(self, user_id):
-        row = self.conn.execute("SELECT cookies_data FROM cookies WHERE user_id=?", (user_id,)).fetchone()
-        return row["cookies_data"] if row else None
-    
+        doc = self.cookies.find_one({"user_id": user_id})
+        return doc.get("cookies_data") if doc else None
+
+    # ---------- History ----------
     def add_history(self, user_id, type, source, output, file_size, status="completed"):
-        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        self.conn.execute(
-            "INSERT INTO history (user_id, type, source, output, file_size, status, date) VALUES (?, ?, ?, ?, ?, ?, ?)",
-            (user_id, type, source, output, file_size, status, now)
-        )
-        self.conn.commit()
-    
+        self.history.insert_one({
+            "user_id": user_id,
+            "type": type,
+            "source": source,
+            "output": output,
+            "file_size": file_size,
+            "status": status,
+            "date": datetime.utcnow()
+        })
+
     def get_history(self, user_id, limit=10):
-        return self.conn.execute(
-            "SELECT * FROM history WHERE user_id=? ORDER BY id DESC LIMIT ?",
-            (user_id, limit)
-        ).fetchall()
-    
+        return list(
+            self.history.find({"user_id": user_id})
+            .sort("_id", -1)
+            .limit(limit)
+        )
+
+    # ---------- Stats ----------
     def update_stats(self, user_id, download_type, file_size=0):
-        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        self.conn.execute(
-            "UPDATE stats SET total_downloads=total_downloads+1, total_size=total_size+?, "
-            "youtube_downloads=youtube_downloads+?, direct_downloads=direct_downloads+?, uploads=uploads+? "
-            "WHERE user_id=?",
-            (
-                file_size,
-                1 if download_type == "youtube" else 0,
-                1 if download_type == "direct" else 0,
-                1 if download_type == "upload" else 0,
-                user_id
-            )
+        inc = {"total_downloads": 1, "total_size": file_size}
+        if download_type == "youtube":
+            inc["youtube_downloads"] = 1
+        elif download_type == "direct":
+            inc["direct_downloads"] = 1
+        elif download_type == "upload":
+            inc["uploads"] = 1
+
+        self.stats.update_one(
+            {"user_id": user_id},
+            {"$inc": inc},
+            upsert=True
         )
-        self.conn.commit()
-    
+
     def get_stats(self, user_id):
-        return self.conn.execute("SELECT * FROM stats WHERE user_id=?", (user_id,)).fetchone()
-    
+        return self.stats.find_one({"user_id": user_id})
+
     def get_total_stats(self):
-        return self.conn.execute("""
-            SELECT 
-                COUNT(DISTINCT user_id) as total_users,
-                SUM(total_downloads) as total_downloads,
-                SUM(total_size) as total_size
-            FROM stats
-        """).fetchone()
-    
+        pipeline = [
+            {"$group": {
+                "_id": None,
+                "total_users": {"$sum": 1},
+                "total_downloads": {"$sum": "$total_downloads"},
+                "total_size": {"$sum": "$total_size"}
+            }}
+        ]
+        result = list(self.stats.aggregate(pipeline))
+        if result:
+            return result[0]
+        return {"total_users": 0, "total_downloads": 0, "total_size": 0}
+
+    # ---------- User Settings ----------
     def get_user_settings(self, user_id):
-        row = self.conn.execute("SELECT settings FROM users WHERE user_id=?", (user_id,)).fetchone()
-        return json.loads(row["settings"]) if row and row["settings"] else {}
-    
+        user = self.users.find_one({"user_id": user_id})
+        return user.get("settings", {}) if user else {}
+
     def save_user_settings(self, user_id, settings):
-        self.conn.execute(
-            "UPDATE users SET settings=? WHERE user_id=?",
-            (json.dumps(settings), user_id)
-        )
-        self.conn.commit()
-    
+        self.users.update_one({"user_id": user_id}, {"$set": {"settings": settings}})
+
+    # ---------- Downloads (active) ----------
     def add_download(self, user_id, url, file_name):
-        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        cursor = self.conn.execute(
-            "INSERT INTO downloads (user_id, url, file_name, status, start_date) VALUES (?, ?, ?, 'pending', ?)",
-            (user_id, url, file_name, now)
-        )
-        self.conn.commit()
-        return cursor.lastrowid
-    
+        doc = {
+            "user_id": user_id,
+            "url": url,
+            "file_name": file_name,
+            "status": "pending",
+            "progress": 0,
+            "start_date": datetime.utcnow()
+        }
+        result = self.downloads.insert_one(doc)
+        return str(result.inserted_id)
+
     def update_download_status(self, download_id, status, progress=0):
-        self.conn.execute(
-            "UPDATE downloads SET status=?, progress=? WHERE id=?",
-            (status, progress, download_id)
+        from bson.objectid import ObjectId
+        self.downloads.update_one(
+            {"_id": ObjectId(download_id)},
+            {"$set": {"status": status, "progress": progress}}
         )
-        self.conn.commit()
-    
+
     def get_active_downloads_count(self, user_id):
-        return self.conn.execute(
-            "SELECT COUNT(*) as count FROM downloads WHERE user_id=? AND status IN ('pending', 'downloading')",
-            (user_id,)
-        ).fetchone()["count"]
-    
+        return self.downloads.count_documents({
+            "user_id": user_id,
+            "status": {"$in": ["pending", "downloading"]}
+        })
+
     def cancel_download(self, user_id, download_id):
-        self.conn.execute(
-            "UPDATE downloads SET status='cancelled' WHERE id=? AND user_id=?",
-            (download_id, user_id)
+        from bson.objectid import ObjectId
+        self.downloads.update_one(
+            {"_id": ObjectId(download_id), "user_id": user_id},
+            {"$set": {"status": "cancelled"}}
         )
-        self.conn.commit()
 
 db = Database()
