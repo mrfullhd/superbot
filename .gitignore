@@ -1,0 +1,13 @@
+.env
+service_account.json
+client_secrets.json
+*.session
+*.session-journal
+data/database.db
+data/tokens/*
+downloads/*
+logs/*
+cookies/*
+__pycache__/
+*.pyc
+.DS_Store
