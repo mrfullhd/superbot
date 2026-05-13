@@ -9,6 +9,38 @@ from utils.helpers import format_bytes
 # =====================================
 # BUILD BUTTONS (ONLY SAFE FORMATS)
 # =====================================
+async def mp3_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+
+    if not context.args:
+        await update.message.reply_text("Usage: /mp3 url")
+        return
+
+    url = context.args[0]
+
+    msg = await update.message.reply_text("⏳ Downloading audio...")
+
+    try:
+        file_path, info = youtube_dl.download(
+            url=url,
+            user_id=user_id,
+            audio_only=True
+        )
+
+        size = file_path.stat().st_size
+
+        with open(file_path, "rb") as f:
+            await update.message.reply_audio(
+                audio=f,
+                caption=f"🎵 {info.get('title','')[:100]}\n📦 {format_bytes(size)}",
+                title=info.get("title", "Unknown"),
+                duration=info.get("duration", 0)
+            )
+
+        await msg.edit_text("✅ Done!")
+
+    except Exception as e:
+        await msg.edit_text(f"❌ Error:\n{str(e)[:300]}")
 def build_keyboard(formats, url):
     buttons = []
 
