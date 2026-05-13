@@ -20,6 +20,7 @@ def format_bytes(size):
 def make_progress_bar(percent, length=15):
     filled = int(percent / 100 * length)
     return "■" * filled + "□" * (length - filled)
+
 def format_duration(seconds):
     if not seconds:
         return "نامشخص"
