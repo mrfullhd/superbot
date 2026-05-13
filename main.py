@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 # ============================================
 # AzuDl Telegram Bot - Main Entry Point
+# Python 3.11 + python-telegram-bot v20.7
 # ============================================
 
 import asyncio
@@ -26,7 +27,7 @@ from handlers.youtube import yt_command, mp3_command
 from handlers.direct import direct_command
 from handlers.upload import upload_command, handle_caption_upload
 from handlers.cookies import cookie_command
-from handlers.login import login_command, logout_command
+from handlers.login import login_command, logout_command, code_command
 from handlers.search import search_command
 from handlers.playlist import playlist_command
 from handlers.settings import settings_command, settings_callback
@@ -62,22 +63,13 @@ def create_directories():
         Path(d).mkdir(parents=True, exist_ok=True)
 
 # ============================================
-# MAIN APPLICATION
+# BUILD APPLICATION
 # ============================================
 
 def build_application():
     """ساخت اپلیکیشن تلگرام"""
     
-    # Build application
-    application = (
-        Application.builder()
-        .token(config.BOT_TOKEN)
-        .read_timeout(30)
-        .write_timeout(30)
-        .connect_timeout(30)
-        .pool_timeout(30)
-        .build()
-    )
+    application = Application.builder().token(config.BOT_TOKEN).build()
     
     # ============================================
     # COMMAND HANDLERS
@@ -90,7 +82,7 @@ def build_application():
     # Download commands
     application.add_handler(CommandHandler("yt", yt_command))
     application.add_handler(CommandHandler("mp3", mp3_command))
-    application.add_handler(CommandHandler("dl", yt_command))  # Alias
+    application.add_handler(CommandHandler("dl", yt_command))
     application.add_handler(CommandHandler("direct", direct_command))
     application.add_handler(CommandHandler("formats", formats_command))
     
@@ -99,26 +91,27 @@ def build_application():
     
     # Search
     application.add_handler(CommandHandler("search", search_command))
-    application.add_handler(CommandHandler("s", search_command))  # Alias
+    application.add_handler(CommandHandler("s", search_command))
     
     # Playlist
     application.add_handler(CommandHandler("playlist", playlist_command))
-    application.add_handler(CommandHandler("pl", playlist_command))  # Alias
+    application.add_handler(CommandHandler("pl", playlist_command))
     
     # Google Drive OAuth
     application.add_handler(CommandHandler("login", login_command))
     application.add_handler(CommandHandler("logout", logout_command))
+    application.add_handler(CommandHandler("code", code_command))
     
     # Cookies
     application.add_handler(CommandHandler("cookie", cookie_command))
     
     # Settings
     application.add_handler(CommandHandler("settings", settings_command))
-    application.add_handler(CommandHandler("set", settings_command))  # Alias
+    application.add_handler(CommandHandler("set", settings_command))
     
     # Stats
     application.add_handler(CommandHandler("stats", stats_command))
-    application.add_handler(CommandHandler("me", stats_command))  # Alias
+    application.add_handler(CommandHandler("me", stats_command))
     
     # Info commands
     application.add_handler(CommandHandler("latest", latest_command))
@@ -173,7 +166,7 @@ def build_application():
     return application
 
 # ============================================
-# CALLBACK HANDLERS (Menu & Navigation)
+# CALLBACK HANDLERS
 # ============================================
 
 async def menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -184,77 +177,78 @@ async def menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if data == "menu_start":
         from handlers.start import start_command
         await query.message.delete()
-        # Fake update for start
         await start_command(update, context)
+        return
     
     elif data == "menu_yt":
-        await query.answer("لینک یوتیوب را با /yt بفرستید")
+        await query.answer("🎬 لینک یوتیوب را با /yt بفرستید", show_alert=True)
     
     elif data == "menu_mp3":
-        await query.answer("لینک را با /mp3 بفرستید")
+        await query.answer("🎵 لینک را با /mp3 بفرستید", show_alert=True)
     
     elif data == "menu_search":
-        await query.answer("از /search استفاده کنید")
+        await query.answer("🔍 از /search استفاده کنید", show_alert=True)
     
     elif data == "menu_login":
+        await query.answer("🔐 در حال آماده‌سازی اتصال...")
         from handlers.login import login_command
         await login_command(update, context)
+        return
     
     elif data == "menu_settings":
         from handlers.settings import settings_command
         await settings_command(update, context)
+        return
     
     elif data == "menu_stats":
         from handlers.stats import stats_command
         await stats_command(update, context)
+        return
     
     elif data == "menu_upload":
-        await query.answer("فایل بفرستید و /up را ریپلای کنید")
+        await query.answer("📤 فایل بفرستید و /up را ریپلای کنید", show_alert=True)
     
     await query.answer()
 
 async def formats_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """انتخاب فرمت برای دانلود"""
     query = update.callback_query
-    data = query.data  # fmt_FORMATID_URL
+    data = query.data
     
     parts = data.split("_", 2)
     format_id = parts[1] if len(parts) > 1 else "best"
-    # url رو از state می‌خونیم
     url = context.user_data.get("format_url", "")
     
     if url:
         await query.answer(f"دانلود با فرمت {format_id} شروع شد...")
         context.user_data["selected_format"] = format_id
-        # شروع دانلود
-        from handlers.youtube import yt_command
-        # آپدیت context.args برای yt_command
         context.args = [url]
         await query.message.delete()
         await yt_command(update, context)
     else:
-        await query.answer("❌ لینک یافت نشد")
+        await query.answer("❌ لینک یافت نشد", show_alert=True)
 
 async def download_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """دانلود از نتایج جستجو"""
     query = update.callback_query
-    data = query.data  # dl_VIDEO_ID
+    data = query.data
     
     video_id = data.replace("dl_", "")
     url = f"https://youtube.com/watch?v={video_id}"
     
     await query.answer("شروع دانلود...")
     context.args = [url]
+    await query.message.delete()
     await yt_command(update, context)
 
 # ============================================
-# OAuth CALLBACK (For Web Server)
+# OAuth CALLBACK (For Web Server - Fallback)
 # ============================================
 
 async def oauth_callback(request):
     """
     هندلر callback از Google OAuth
-    این تابع باید توسط وب‌سرور (Flask/FastAPI) صدا زده بشه
+    این تابع توسط وب‌سرور Flask صدا زده میشه
     """
     from urllib.parse import parse_qs, urlparse
     
@@ -265,34 +259,37 @@ async def oauth_callback(request):
     state = params.get("state", [None])[0]
     
     if not code or not state:
-        return "❌ Invalid request"
+        return "❌ Invalid request - missing code or state"
     
     user_id = int(state)
     success, result = google_auth.exchange_code(user_id, code, state)
     
     if success:
         return f"""
-        <html>
-        <body style="font-family: sans-serif; text-align: center; padding: 50px;">
-            <h1>✅ اتصال موفق!</h1>
+        <html dir="rtl">
+        <head><meta charset="utf-8"></head>
+        <body style="font-family: Tahoma, sans-serif; text-align: center; padding: 50px; background: #f0f8f0;">
+            <h1 style="color: green;">✅ اتصال موفق!</h1>
             <p>Google Drive شما با موفقیت متصل شد.</p>
             <p>می‌توانید به ربات تلگرام برگردید.</p>
-            <p>ایمیل: {result}</p>
+            <p style="color: gray;">ایمیل: {result}</p>
         </body>
         </html>
         """
     else:
         return f"""
-        <html>
-        <body style="font-family: sans-serif; text-align: center; padding: 50px;">
-            <h1>❌ خطا در اتصال</h1>
+        <html dir="rtl">
+        <head><meta charset="utf-8"></head>
+        <body style="font-family: Tahoma, sans-serif; text-align: center; padding: 50px; background: #fff0f0;">
+            <h1 style="color: red;">❌ خطا در اتصال</h1>
             <p>{result}</p>
+            <p style="color: gray;">لطفاً دوباره تلاش کنید یا از دستور /code استفاده کنید.</p>
         </body>
         </html>
         """
 
 # ============================================
-# WEB SERVER (برای Runflare)
+# WEB SERVER (For Runflare - Optional)
 # ============================================
 
 def create_web_app():
@@ -304,14 +301,20 @@ def create_web_app():
         
         @app.route("/")
         def home():
-            return "AzuDl Bot is running!"
+            return "AzuDl Telegram Bot is running!"
         
         @app.route("/oauth2callback")
         def callback():
-            return asyncio.run(oauth_callback(request))
+            import asyncio as aio
+            loop = aio.new_event_loop()
+            aio.set_event_loop(loop)
+            result = loop.run_until_complete(oauth_callback(request))
+            loop.close()
+            return result
         
         return app
     except ImportError:
+        logger.warning("Flask not installed - web server disabled")
         return None
 
 # ============================================
@@ -329,22 +332,30 @@ def main():
     
     logger.info("=" * 60)
     logger.info("AzuDl Telegram Bot Starting...")
+    logger.info(f"Bot: {config.BOT_USERNAME}")
     logger.info("=" * 60)
     
-    # اجرای وب‌سرور در thread جدا
+    # اجرای وب‌سرور در thread جدا (اختیاری)
     web_app = create_web_app()
     if web_app:
         import threading
         web_thread = threading.Thread(
             target=web_app.run,
-            kwargs={"host": "0.0.0.0", "port": 8080},
+            kwargs={
+                "host": "0.0.0.0",
+                "port": 8080,
+                "debug": False,
+                "use_reloader": False
+            },
             daemon=True
         )
         web_thread.start()
-        logger.info("Web server started on port 8080")
+        logger.info("🌐 Web server started on port 8080 (for OAuth callback)")
+    else:
+        logger.info("ℹ️ Web server disabled - use /code command for OAuth")
     
     # اجرای ربات تلگرام
-    logger.info("Starting Telegram bot polling...")
+    logger.info("🤖 Starting Telegram bot polling...")
     application.run_polling(allowed_updates=Update.ALL_TYPES)
 
 if __name__ == "__main__":
