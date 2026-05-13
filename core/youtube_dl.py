@@ -9,9 +9,9 @@ class YouTubeDownloader:
     def __init__(self):
         pass
 
-    # =========================================
+    # =====================================
     # COOKIES
-    # =========================================
+    # =====================================
     def get_cookies_path(self, user_id):
         cookies_data = db.get_cookies(user_id)
         if not cookies_data:
@@ -22,9 +22,9 @@ class YouTubeDownloader:
         cookies_path.write_text(cookies_data)
         return str(cookies_path)
 
-    # =========================================
-    # GET FORMATS (SAFE + CLEAN)
-    # =========================================
+    # =====================================
+    # GET FORMATS (CLEAN + SAFE)
+    # =====================================
     def get_formats(self, url, user_id=None):
         options = {
             "quiet": True,
@@ -49,8 +49,12 @@ class YouTubeDownloader:
                 vcodec = f.get("vcodec")
                 acodec = f.get("acodec")
 
-                # فقط فرمت‌های واقعی
+                # ❌ حذف junk formats
                 if vcodec == "none" and acodec == "none":
+                    continue
+
+                # ❌ حذف invalid
+                if vcodec is None and acodec is None:
                     continue
 
                 formats.append({
@@ -65,12 +69,12 @@ class YouTubeDownloader:
             "title": info.get("title", "Unknown"),
             "duration": info.get("duration", 0),
             "thumbnail": info.get("thumbnail", ""),
-            "formats": formats[:25]
+            "formats": formats[:20]
         }
 
-    # =========================================
-    # DOWNLOAD (FIXED + NO FORMAT ERROR)
-    # =========================================
+    # =====================================
+    # DOWNLOAD (FIXED 100% SAFE)
+    # =====================================
     def download(self, url, user_id, folder_name="",
                  audio_only=False, format_id=None,
                  progress_callback=None):
@@ -88,8 +92,12 @@ class YouTubeDownloader:
             if not format_id or format_id == "best":
                 format_selection = "bestvideo+bestaudio/best"
             else:
-                # مهم: همیشه audio رو اضافه کن
-                format_selection = f"{format_id}+bestaudio/bestvideo+bestaudio/best"
+                # 🔥 مهم: fallback safe chain
+                format_selection = (
+                    f"{format_id}+bestaudio/"
+                    f"{format_id}/"
+                    "bestvideo+bestaudio/best"
+                )
 
         options = {
             "format": format_selection,
@@ -103,12 +111,10 @@ class YouTubeDownloader:
             "noplaylist": True,
         }
 
-        # cookies
         cookies_path = self.get_cookies_path(user_id)
         if cookies_path:
             options["cookiefile"] = cookies_path
 
-        # proxy
         if getattr(config, "PROXY_URL", None):
             options["proxy"] = config.PROXY_URL
 
@@ -119,13 +125,10 @@ class YouTubeDownloader:
 
             file_path = Path(filename)
 
-            if audio_only:
-                file_path = file_path.with_suffix(".mp3")
-
             return file_path, info
 
         # =====================================
-        # HARD FALLBACK (IMPORTANT)
+        # FINAL FALLBACK
         # =====================================
         except Exception:
             options["format"] = "best"
