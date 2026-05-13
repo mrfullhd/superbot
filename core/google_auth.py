@@ -1,5 +1,3 @@
-# core/google_auth.py
-
 import os
 import json
 import config
@@ -10,7 +8,6 @@ from google.auth.transport.requests import Request
 from core.database import db
 
 SCOPES = ['https://www.googleapis.com/auth/drive']
-
 CLIENT_CONFIG = {
     "web": {
         "client_id": config.GOOGLE_CLIENT_ID,
@@ -43,15 +40,10 @@ class GoogleDriveAuth:
         return auth_url, state
     
     def exchange_code(self, user_id, code, state):
-        """
-        تبدیل کد OAuth به توکن
-        نسخه بهبود یافته با مدیریت خطا
-        """
+        """تبدیل کد به توکن"""
         try:
             flow = self.flows.get(state)
-            
             if not flow:
-                # ساخت flow جدید اگر state پیدا نشد
                 flow = Flow.from_client_config(
                     CLIENT_CONFIG,
                     scopes=SCOPES,
@@ -59,16 +51,14 @@ class GoogleDriveAuth:
                     state=state
                 )
             
-            # تبادل کد با توکن
             flow.fetch_token(code=code)
             credentials = flow.credentials
             
-            # دریافت ایمیل کاربر از Google Drive
+            # دریافت ایمیل کاربر
             drive_service = build('drive', 'v3', credentials=credentials)
             about = drive_service.about().get(fields="user").execute()
             email = about.get('user', {}).get('emailAddress', 'unknown')
             
-            # ذخیره توکن در دیتابیس
             token_data = {
                 'token': credentials.token,
                 'refresh_token': credentials.refresh_token,
@@ -81,16 +71,12 @@ class GoogleDriveAuth:
             db.save_token(user_id, token_data, email)
             db.add_user(user_id)
             
-            # پاکسازی flow
             if state in self.flows:
                 del self.flows[state]
             
             return True, email
             
         except Exception as e:
-            # پاکسازی flow در صورت خطا
-            if state in self.flows:
-                del self.flows[state]
             return False, str(e)
     
     def get_drive_service(self, user_id):
@@ -99,39 +85,31 @@ class GoogleDriveAuth:
         if not token_data:
             return None
         
-        try:
-            credentials = Credentials.from_authorized_user_info(token_data, SCOPES)
-            
-            # تمدید خودکار توکن اگر منقضی شده
-            if credentials.expired and credentials.refresh_token:
-                try:
-                    credentials.refresh(Request())
-                    new_token_data = {
-                        'token': credentials.token,
-                        'refresh_token': credentials.refresh_token,
-                        'token_uri': credentials.token_uri,
-                        'client_id': credentials.client_id,
-                        'client_secret': credentials.client_secret,
-                        'scopes': credentials.scopes
-                    }
-                    db.save_token(user_id, new_token_data, None)
-                except Exception as e:
-                    print(f"Refresh token failed for user {user_id}: {e}")
-                    db.delete_token(user_id)
-                    return None
-            
-            return build('drive', 'v3', credentials=credentials)
-            
-        except Exception as e:
-            print(f"Get drive service error for user {user_id}: {e}")
-            return None
+        credentials = Credentials.from_authorized_user_info(token_data, SCOPES)
+        
+        if credentials.expired:
+            try:
+                credentials.refresh(Request())
+                new_token_data = {
+                    'token': credentials.token,
+                    'refresh_token': credentials.refresh_token,
+                    'token_uri': credentials.token_uri,
+                    'client_id': credentials.client_id,
+                    'client_secret': credentials.client_secret,
+                    'scopes': credentials.scopes
+                }
+                db.save_token(user_id, new_token_data, None)
+            except Exception as e:
+                print(f"Refresh token failed for user {user_id}: {e}")
+                db.delete_token(user_id)
+                return None
+        
+        return build('drive', 'v3', credentials=credentials)
     
     def is_authenticated(self, user_id):
-        """بررسی وضعیت احراز هویت کاربر"""
         return db.is_authenticated(user_id)
     
     def logout(self, user_id):
-        """قطع اتصال کاربر"""
         db.delete_token(user_id)
 
 google_auth = GoogleDriveAuth()
