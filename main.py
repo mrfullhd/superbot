@@ -23,7 +23,7 @@ import config
 # ============================================
 
 from handlers.start import start_command
-from handlers.youtube import yt_command, mp3_commandو  yt_callback
+from handlers.youtube import yt_command, mp3_command, yt_callback
 from handlers.direct import direct_command
 from handlers.upload import upload_command, handle_caption_upload
 from handlers.cookies import cookie_command
