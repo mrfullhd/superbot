@@ -1,33 +1,29 @@
 import asyncio
-import time
-from pathlib import Path
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes, CallbackQueryHandler
 
 from core.youtube_dl import youtube_dl
+from core.database import db
+from utils.helpers import format_bytes
 from core.google_drive import get_drive_service
 from core.downloader import download_manager
-from core.database import db
-from utils.helpers import format_bytes, make_progress_bar
 from keyboards.inline import cancel_keyboard
 
 
 # ============================================
-# KEYBOARD BUILDER (INLINE QUALITY SELECTOR)
+# BUILD INLINE KEYBOARD (FORMATS)
 # ============================================
-
 def build_keyboard(formats, url):
     buttons = []
 
     for f in formats:
-        label = ""
+        vcodec = f.get("vcodec")
+        acodec = f.get("acodec")
 
-        # video + audio
-        if f.get("vcodec") != "none" and f.get("acodec") != "none":
-            label = f"🎬 {f.get('resolution','?')}p {f.get('ext','')}"
-        # audio only
-        elif f.get("vcodec") == "none":
-            label = f"🎵 Audio {f.get('ext','')}"
+        if vcodec != "none" and acodec != "none":
+            label = f"🎬 {f.get('resolution','?')}p"
+        elif vcodec == "none":
+            label = "🎵 Audio"
         else:
             label = f"🎥 {f.get('resolution','?')}p"
 
@@ -38,34 +34,28 @@ def build_keyboard(formats, url):
             )
         ])
 
-    # best quality button
     buttons.append([
-        InlineKeyboardButton(
-            "⚡ Best Quality",
-            callback_data=f"yt|{url}|best"
-        )
+        InlineKeyboardButton("⚡ Best Quality", callback_data=f"yt|{url}|best")
     ])
 
     return InlineKeyboardMarkup(buttons)
 
 
 # ============================================
-# /YT COMMAND (STEP 1: SHOW FORMATS)
+# /YT COMMAND
 # ============================================
-
 async def yt_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
 
     if not context.args:
         await update.message.reply_text(
-            "📝 **نحوه استفاده:**\n`/yt URL`",
-            parse_mode="Markdown"
+            "📝 Usage:\n/yt url"
         )
         return
 
     url = context.args[0]
 
-    msg = await update.message.reply_text("⏳ در حال بررسی کیفیت‌ها...")
+    msg = await update.message.reply_text("⏳ Getting video info...")
 
     try:
         data = youtube_dl.get_formats(url, user_id)
@@ -73,139 +63,120 @@ async def yt_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         keyboard = build_keyboard(data["formats"], url)
 
         await msg.edit_text(
-            f"🎬 **{data['title'][:80]}**\n\n👇 کیفیت مورد نظر را انتخاب کنید:",
-            reply_markup=keyboard,
-            parse_mode="Markdown"
+            f"🎬 {data['title'][:80]}\n\n👇 Select quality:",
+            reply_markup=keyboard
         )
 
     except Exception as e:
-        await msg.edit_text(f"❌ خطا در دریافت اطلاعات:\n`{str(e)[:300]}`", parse_mode="Markdown")
+        await msg.edit_text(f"❌ Error:\n{str(e)[:300]}")
 
 
 # ============================================
-# CALLBACK HANDLER (STEP 2: DOWNLOAD SELECTED FORMAT)
+# CALLBACK HANDLER (DOWNLOAD SELECTED FORMAT)
 # ============================================
-
 async def yt_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
 
+    user_id = query.from_user.id
+
     try:
         _, url, format_id = query.data.split("|")
 
-        await query.edit_message_text("⬇️ در حال دانلود...")
+        await query.edit_message_text("⬇️ Downloading...")
+
+        download_manager.add_download(user_id, url, "YouTube")
+        download_manager.start_download(user_id)
 
         file_path, info = youtube_dl.download(
             url=url,
-            user_id=query.from_user.id,
+            user_id=user_id,
             format_id=None if format_id == "best" else format_id
         )
 
-        file_size = file_path.stat().st_size
-
-        # Telegram send
-        await query.message.reply_video(
-            video=open(file_path, "rb"),
-            caption=(
-                f"🎬 {info.get('title','Unknown')[:100]}\n"
-                f"📏 {format_bytes(file_size)}"
-            ),
-            supports_streaming=True
-        )
-
-        # history save
-        db.add_history(
-            query.from_user.id,
-            "youtube",
-            url,
-            str(file_path),
-            file_size
-        )
-
-        db.update_stats(query.from_user.id, "youtube", file_size)
-
-    except Exception as e:
-        await query.message.reply_text(
-            f"❌ خطا در دانلود:\n`{str(e)[:300]}`",
-            parse_mode="Markdown"
-        )
-
-
-# ============================================
-# MP3 COMMAND (UNCHANGED - OPTIONAL)
-# ============================================
-
-async def mp3_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-
-    if not context.args:
-        await update.message.reply_text("Usage: /mp3 URL")
-        return
-
-    url = context.args[0]
-    download_id = download_manager.add_download(user_id, url, "YouTube MP3")
-
-    msg = await update.message.reply_text("⏳ در حال دانلود MP3...")
-
-    file_path = None
-
-    try:
-        download_manager.start_download(download_id)
-
-        file_path, info = youtube_dl.download(
-            url,
-            user_id,
-            audio_only=True
-        )
-
-        if download_manager.is_cancelled(download_id):
-            await msg.edit_text("🚫 لغو شد")
+        if download_manager.is_cancelled(user_id):
+            await query.edit_message_text("🚫 Cancelled")
             return
 
-        file_size = file_path.stat().st_size
+        size = file_path.stat().st_size
 
-        drive = get_drive_service(user_id)
+        # upload to drive (optional)
         drive_uploaded = False
+        drive = get_drive_service(user_id)
 
         if drive:
             try:
                 drive.upload_file(user_id, file_path)
                 drive_uploaded = True
-            except Exception as e:
-                print(e)
+            except Exception:
+                pass
 
-        if file_size < 50 * 1024 * 1024:
-            await update.message.reply_audio(
-                audio=open(file_path, "rb"),
-                caption=f"🎵 {info.get('title','')[:100]}",
-                title=info.get('title','Unknown'),
-                duration=info.get('duration', 0)
+        # send to telegram
+        with open(file_path, "rb") as f:
+            await query.message.reply_video(
+                video=f,
+                caption=(
+                    f"🎬 {info.get('title','Unknown')[:100]}\n"
+                    f"📦 {format_bytes(size)}"
+                    f"{' | 💾 Drive' if drive_uploaded else ''}"
+                ),
+                supports_streaming=True
             )
 
+        db.add_history(user_id, "youtube", url, str(file_path), size)
+        db.update_stats(user_id, "youtube", size)
+
+        await query.edit_message_text("✅ Done!")
+
     except Exception as e:
-        await msg.edit_text(f"❌ خطا:\n`{str(e)[:300]}`")
-
-    finally:
-        download_manager.finish_download(download_id)
+        await query.message.reply_text(
+            f"❌ Download error:\n{str(e)[:300]}"
+        )
 
 
 # ============================================
-# CLEANUP
+# MP3 COMMAND (OPTIONAL BUT CLEANED)
 # ============================================
+async def mp3_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
 
-async def cleanup_file(file_path, delay=3600):
-    await asyncio.sleep(delay)
+    if not context.args:
+        await update.message.reply_text("Usage: /mp3 url")
+        return
+
+    url = context.args[0]
+
+    msg = await update.message.reply_text("⏳ Downloading audio...")
+
     try:
-        if file_path and file_path.exists():
-            file_path.unlink()
-    except Exception:
-        pass
+        file_path, info = youtube_dl.download(
+            url=url,
+            user_id=user_id,
+            audio_only=True
+        )
+
+        size = file_path.stat().st_size
+
+        with open(file_path, "rb") as f:
+            await update.message.reply_audio(
+                audio=f,
+                caption=f"🎵 {info.get('title','')[:100]}\n📦 {format_bytes(size)}",
+                title=info.get("title", "Unknown"),
+                duration=info.get("duration", 0)
+            )
+
+        db.add_history(user_id, "youtube_mp3", url, str(file_path), size)
+        db.update_stats(user_id, "youtube", size)
+
+        await msg.edit_text("✅ Done!")
+
+    except Exception as e:
+        await msg.edit_text(f"❌ Error:\n{str(e)[:300]}")
 
 
 # ============================================
-# REGISTER CALLBACK HANDLER (IMPORTANT)
+# REGISTER CALLBACK
 # ============================================
-
 yt_callback_handler = CallbackQueryHandler(
     yt_callback,
     pattern="^yt\\|"
