@@ -4,6 +4,7 @@ from telegram.ext import ContextTypes
 from core.google_drive import get_drive_service
 from core.database import db
 from core.uploader import download_from_telegram
+
 from utils.helpers import format_bytes, sanitize_name
 
 from pathlib import Path
@@ -11,15 +12,13 @@ import time
 
 
 # =========================================
-# UPLOAD COMMAND (FIXED)
+# /up COMMAND (FIXED MTProto)
 # =========================================
 async def upload_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
 
     if not update.message.reply_to_message:
-        await update.message.reply_text(
-            "📤 روی فایل ریپلای کنید + /up"
-        )
+        await update.message.reply_text("📤 روی فایل ریپلای کنید + /up")
         return
 
     message = update.message.reply_to_message
@@ -27,32 +26,18 @@ async def upload_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # =====================================
     # DETECT FILE
     # =====================================
-    file_name = "file"
-    file_size = 0
-    file_obj = None
-
     if message.document:
-        file_obj = message.document
-        file_name = message.document.file_name
-
+        file_name = message.document.file_name or "file"
     elif message.video:
-        file_obj = message.video
         file_name = message.video.file_name or f"video_{int(time.time())}.mp4"
-
     elif message.audio:
-        file_obj = message.audio
         file_name = message.audio.file_name or f"audio_{int(time.time())}.mp3"
-
     elif message.photo:
-        file_obj = message.photo[-1]
         file_name = f"photo_{int(time.time())}.jpg"
-
     elif message.voice:
-        file_obj = message.voice
         file_name = f"voice_{int(time.time())}.ogg"
-
     else:
-        await update.message.reply_text("❌ File type not supported")
+        await update.message.reply_text("❌ نوع فایل پشتیبانی نمی‌شود")
         return
 
     msg = await update.message.reply_text("⬇️ Downloading via MTProto...")
@@ -66,7 +51,7 @@ async def upload_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         temp_path.parent.mkdir(parents=True, exist_ok=True)
 
         # =====================================
-        # PYROGRAM DOWNLOAD (NO LIMIT)
+        # 🚀 PYROGRAM DOWNLOAD (NO LIMIT FIX)
         # =====================================
         await download_from_telegram(
             message,
@@ -75,7 +60,7 @@ async def upload_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         file_size = temp_path.stat().st_size
 
-        await msg.edit_text("📤 Uploading to Drive...")
+        await msg.edit_text("📤 Uploading to Google Drive...")
 
         # =====================================
         # DRIVE UPLOAD
@@ -88,13 +73,13 @@ async def upload_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 drive.upload_file(user_id, temp_path)
                 drive_uploaded = True
             except Exception as e:
-                print(f"Drive error: {e}")
+                print("Drive error:", e)
 
         # =====================================
         # RESULT
         # =====================================
         text = (
-            f"✅ Uploaded!\n\n"
+            f"✅ Upload Done!\n\n"
             f"📁 {safe_name}\n"
             f"📦 {format_bytes(file_size)}\n"
         )
@@ -119,7 +104,7 @@ async def upload_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 # =========================================
-# CAPTION HANDLER (/up)
+# /up caption handler
 # =========================================
 async def handle_caption_upload(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if "/up" in (update.message.caption or ""):
